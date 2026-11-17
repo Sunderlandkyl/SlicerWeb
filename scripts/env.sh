@@ -6,6 +6,12 @@ export SW_SRC=$SW_BUILD/src
 export SW_INSTALL=$SW_BUILD/install
 export SW_DIST_ROOT=${SW_DIST_ROOT:-/dist}
 set -a; source "$SW_ROOT/sources.env"; set +a
+# A build of another revision of a source than sources.env pins - continuous integration building
+# the Slicer commit it was started for, for example: SW_<NAME>_URL and SW_<NAME>_REV in the
+# environment take the place of <NAME>_URL and <NAME>_REV (SW_SLICER_URL=/slicer SW_SLICER_REV=abc123).
+for v in $(compgen -v | grep -E '^SW_[A-Z0-9]+_(URL|REV)$' || true); do
+  export "${v#SW_}=${!v}"
+done
 
 export PYODIDE_ROOT=$(pyodide config get pyodide_root)
 export PYTHON_INCLUDE_DIR=$(pyodide config get python_include_dir)

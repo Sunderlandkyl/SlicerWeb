@@ -98,6 +98,28 @@ they are merged upstream, the description file points at a fork that has them.
 told something the extension cannot tell by itself. Patches in `patches/<Name>/` are applied to a
 fetched source; they are for the libraries SlicerWeb builds itself (Slicer, VTK, ITK, ...).
 
+## Reviewed and unreviewed extensions
+
+An extension runs with everything the page can reach: the data the user loaded, what the
+application keeps in the browser, and the sites it is signed in to. So the Extensions Manager
+tells apart the extensions somebody reviewed from the others, and checks what it installs:
+
+- `index.json` holds the extensions that are offered. Next to it, `unreviewed.json`, in the same
+  format, holds the ones nobody reviewed. Those are shown only once the user ticks *Show
+  unreviewed* in the Extensions Manager and accepts a warning (kept in the browser as
+  `slicerweb.unreviewedExtensions`); each is marked, and installing one asks again. A site need not
+  have an `unreviewed.json`.
+- An entry can give the `sha256` of its wheel. The wheel is then fetched, compared with it, and
+  installed only if it matches, by the page and by the worker that runs jobs; the hash is kept with
+  the installed wheel, so that later starts check it too. This is what lets `wheel` be an address
+  on another site: what is installed is what the index describes, whatever served it.
+- `?extensions=` on the address installs extensions by name from `index.json` only, unless the
+  user chose to be shown the unreviewed ones. The address of a wheel there is installed only after
+  the user confirms it: a link cannot install code from anywhere without a word.
+
+`tier`, when an entry has it, is that of the Slicer ExtensionsIndex (1 to 5; 0 for an extension
+that is not reviewed). `tests/unreviewed-extensions.mjs` exercises all of this.
+
 ## Private repositories
 
 ### Sources

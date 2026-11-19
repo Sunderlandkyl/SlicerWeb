@@ -2,8 +2,9 @@
 // Extensions Manager: browse an extension index, install/uninstall extension wheels.
 // Installed extensions are remembered in the browser (localStorage) and loaded at startup.
 import { computed, inject, nextTick, onMounted, ref, useTemplateRef, watch } from "vue";
-import { X, Download, Trash2, ExternalLink, Puzzle } from "@lucide/vue";
+import { X, Download, Trash2, ExternalLink, Puzzle, ShieldAlert } from "@lucide/vue";
 import type { SlicerRuntime } from "@/core/runtime";
+import { loadExtensionIndex, showUnreviewedExtensions, unreviewedExtensionsShown } from "@/core/extensions";
 
 interface ExtensionEntry {
   name: string;
@@ -18,6 +19,9 @@ interface ExtensionEntry {
   modules?: string[];
   revision?: string;
   requires?: string[]; // SlicerWeb wheels needed besides the startup wheels (e.g. slicerweb-itk-extra)
+  sha256?: string; // of the wheel: checked before it is installed
+  tier?: number; // of the Slicer ExtensionsIndex (1 to 5); 0: not reviewed
+  unreviewed?: boolean; // from the unreviewed.json next to the index
 }
 
 const emit = defineEmits<{ close: [] }>();
@@ -27,6 +31,21 @@ const extensions = ref<ExtensionEntry[]>([]);
 const installed = ref<string[]>(JSON.parse(localStorage.getItem("slicerweb.extensions") ?? "[]"));
 const status = ref("");
 const filter = ref("");
+// The extensions nobody reviewed (unreviewed.json, next to the index) are offered only to a user
+// who asks for them here; the choice is kept in the browser.
+const unreviewedShown = ref(unreviewedExtensionsShown());
+const UNREVIEWED_WARNING = "Nobody has reviewed these extensions. An extension can read and change everything this " +
+  "application holds: the data you load, what it stores in this browser, and the sites you are signed in to through it.";
+function toggleUnreviewed(event: Event) {
+  const box = event.target as HTMLInputElement;
+  if (box.checked && !window.confirm(`${UNREVIEWED_WARNING}\n\nShow unreviewed extensions?`)) {
+    box.checked = false;
+    return;
+  }
+  unreviewedShown.value = box.checked;
+  showUnreviewedExtensions(box.checked);
+  loadIndex();
+}
 
 const shown = computed(() => {
   const f = filter.value.toLowerCase();
@@ -98,8 +117,7 @@ function wheelUrl(e: ExtensionEntry) {
 async function loadIndex() {
   status.value = "Loading extension index…";
   try {
-    const response = await fetch(indexUrl.value);
-    extensions.value = (await response.json()).extensions ?? [];
+    extensions.value = (await loadExtensionIndex(indexUrl.value, unreviewedShown.value)).extensions as ExtensionEntry[];
     localStorage.setItem("slicerweb.extensionIndex", indexUrl.value);
     status.value = "";
   } catch (e: any) {
@@ -113,6 +131,10 @@ function isInstalled(e: ExtensionEntry) {
 }
 
 async function install(e: ExtensionEntry) {
+  if (e.unreviewed && !window.confirm(`${e.name} has not been reviewed.\n\n${UNREVIEWED_WARNING}\n\nInstall it?`)) {
+    status.value = `${e.name} was not installed.`;
+    return;
+  }
   status.value = `Installing ${e.name}…`;
   try {
     const unavailable: string[] = [];
@@ -134,7 +156,7 @@ async function install(e: ExtensionEntry) {
     }
     status.value = `Installing ${e.name}…`;
     const url = wheelUrl(e);
-    await runtime.installWheel(url);
+    await runtime.installWheel(url, e.sha256);
     // What the extension asks the browser for (Pyodide packages such as SciPy); a module cannot
     // install one itself, so they are loaded here, before anything of the extension runs.
     const packages = await runtime.loadExtensionPackages();
@@ -183,6 +205,10 @@ onMounted(() => {
           class="h-8 flex-1 rounded-md border border-input bg-background px-2 text-[13px] outline-none focus:border-primary" />
         <input v-model="indexUrl" title="Extension index URL" class="h-8 w-80 max-md:hidden rounded-md border border-input bg-background px-2 text-[12px] text-muted-foreground outline-none" @change="loadIndex" />
         <button type="button" class="h-8 rounded-md bg-secondary/60 px-3 text-[13px] hover:bg-secondary" @click="installFromUrl">Install from URL</button>
+        <label class="flex h-8 items-center gap-1 text-[12px] text-muted-foreground" title="Extensions nobody has reviewed">
+          <input type="checkbox" data-name="showUnreviewedExtensions" :checked="unreviewedShown" @change="toggleUnreviewed" />
+          Show unreviewed
+        </label>
       </div>
       <div v-if="status" class="mx-4 rounded bg-accent px-2 py-1 text-[12px]">{{ status }}</div>
       <div ref="list" class="min-h-0 flex-1 overflow-y-auto px-4 py-2">
@@ -196,6 +222,8 @@ onMounted(() => {
           <div class="min-w-0 flex-1">
             <div class="flex items-baseline gap-2">
               <span class="font-medium">{{ e.name }}</span>
+              <span v-if="e.unreviewed" data-name="unreviewedExtension" :title="UNREVIEWED_WARNING"
+                class="flex items-center gap-1 rounded bg-destructive/40 px-1 text-[11px]"><ShieldAlert :size="12" />Unreviewed</span>
               <span class="text-[12px] text-muted-foreground">{{ e.version }} · {{ e.category }}</span>
               <a v-if="e.homepage" :href="e.homepage" target="_blank" rel="noopener" class="text-muted-foreground hover:text-highlight"><ExternalLink :size="12" /></a>
             </div>

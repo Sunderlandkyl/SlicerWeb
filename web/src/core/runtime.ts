@@ -5,7 +5,12 @@
 import type { PyodideAPI } from "pyodide";
 import { PyodideBridge, setBridge } from "./bridge";
 import { jobRunner } from "./jobs";
-import { EXTENSIONS_KEY, extensionIndexUrl, loadExtensionIndex, resolveExtensionWheels, type ExtensionIndex } from "./extensions";
+import {
+  EXTENSIONS_KEY, extensionIndexUrl, isWheelAddress, loadExtensionIndex, resolveExtensionWheels, unreviewedExtensionsShown,
+  wheelHashes,
+  type ExtensionIndex,
+} from "./extensions";
+import { installWheelChecked, storedWheelHashes, storeWheelHashes } from "./wheelInstall";
 import { loadSettings } from "./settings";
 
 export interface RuntimeConfig {
@@ -478,6 +483,23 @@ bridge.call
 
   // ---------------------------------------------------------------- extensions asked for by modules
   private extensionIndexLoaded: { url: string; index: ExtensionIndex } | null = null;
+  /** The hash each wheel is to have, by its address: what the extension indexes read so far give,
+   *  and before any is read what was kept of the installed ones (wheelInstall.ts). */
+  private wheelHashes: Record<string, string> = storedWheelHashes();
+
+  /** Take the hashes an index gives, and keep those of the installed wheels for the next start. */
+  private learnWheelHashes(index: ExtensionIndex, indexUrl: string) {
+    this.wheelHashes = { ...this.wheelHashes, ...wheelHashes(index, indexUrl) };
+    this.keepWheelHashes();
+  }
+
+  private keepWheelHashes() {
+    const kept: Record<string, string> = {};
+    for (const url of new Set([...this.config.extensionWheels, ...this.installedExtensionWheels()])) {
+      if (this.wheelHashes[url]) kept[url] = this.wheelHashes[url];
+    }
+    storeWheelHashes(kept);
+  }
 
   /** The extension index, fetched once (null where it is not available). */
   async extensionIndex(): Promise<{ url: string; index: ExtensionIndex } | null> {
@@ -485,6 +507,7 @@ bridge.call
     try {
       const url = extensionIndexUrl();
       this.extensionIndexLoaded = { url, index: await loadExtensionIndex(url) };
+      this.learnWheelHashes(this.extensionIndexLoaded.index, url);
     } catch (e) {
       console.warn("The extension index is not available", e);
     }
@@ -544,11 +567,16 @@ bridge.call
     return true;
   }
 
-  async installWheel(url: string): Promise<void> {
+  /**
+   * Install a wheel. One an extension index describes with a hash - `sha256`, or the hash an index
+   * read before gave for this address - is refused unless its content has it.
+   */
+  async installWheel(url: string, sha256?: string): Promise<void> {
     const pyodide = this.pyodide!;
     const micropip = pyodide.pyimport("micropip");
+    if (sha256) this.wheelHashes = { ...this.wheelHashes, [url]: sha256 };
     try {
-      await micropip.install(url, { deps: false });
+      await installWheelChecked(pyodide, micropip, url, this.wheelHashes[url], { deps: false });
     } finally {
       micropip.destroy?.();
     }
@@ -559,6 +587,8 @@ bridge.call
     // It is one of this page's extensions from now on: the worker that runs jobs installs the same
     // wheels as the page, and takes this one before its next job (see jobs.ts).
     if (!this.config.extensionWheels.includes(url)) this.config.extensionWheels = [...this.config.extensionWheels, url];
+    // Its hash is kept with it: the worker checks it too, and so does a start without the index.
+    if (this.wheelHashes[url]) this.keepWheelHashes();
   }
 
   /** What the runtime was built from - wheels/build-info.json, written by build.py - or null for a
@@ -591,15 +621,31 @@ bridge.call
    */
   private async ensureExtensions() {
     if (!this.config.extensions.length && !this.config.extensionWheels.length) return;
+    // A wheel named by its address on the address of the page is code from anywhere, that a link
+    // would otherwise install without a word: the user is asked. (An extension named there is one
+    // the index offers this user, which leaves out the ones nobody reviewed unless they asked to
+    // see them.)
+    this.config.extensions = this.config.extensions.filter((name) => !isWheelAddress(name) || window.confirm(
+      `This link asks to install an extension from\n\n${name}\n\nAn extension can read and change everything ` +
+      "this application holds. Install it only if you trust where it comes from."));
+    if (!this.config.extensions.length && !this.config.extensionWheels.length) return;
     this.progress("extensions", "Resolving extensions", 0.01);
     try {
       const indexUrl = extensionIndexUrl();
-      const index = await loadExtensionIndex(indexUrl);
+      // What this user is offered, which the extensions asked for on the address are taken from;
+      // and everything the index has, the unreviewed extensions included, which the installed
+      // ones are looked up in: one of those that the user installed stays installed, and checked,
+      // whether or not they are being shown now.
+      const offered = await loadExtensionIndex(indexUrl);
+      const index = unreviewedExtensionsShown() ? offered : await loadExtensionIndex(indexUrl, true);
+      this.learnWheelHashes(index, indexUrl);
       const installed = index.extensions
         .filter((e) => this.config.extensionWheels.includes(new URL(e.wheel, indexUrl).href))
         .map((e) => e.name);
-      const { wheels, unknown } = await resolveExtensionWheels(
-        [...installed, ...this.config.extensions], index, indexUrl, (name) => this.baseWheelUrl(name));
+      const kept = await resolveExtensionWheels(installed, index, indexUrl, (name) => this.baseWheelUrl(name));
+      const asked = await resolveExtensionWheels(this.config.extensions, offered, indexUrl, (name) => this.baseWheelUrl(name));
+      const wheels = [...kept.wheels, ...asked.wheels.filter((url) => !kept.wheels.includes(url))];
+      const unknown = [...kept.unknown, ...asked.unknown];
       if (unknown.length) console.warn(`Extensions not in ${indexUrl}: ${unknown.join(", ")}`);
       // A wheel of the index's own folder that the index no longer names belonged to an extension
       // it has dropped or renamed, and is gone from there: it is forgotten. Wheels installed from

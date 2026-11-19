@@ -10,12 +10,15 @@
  * {type:"cancel"}. Messages out: {type:"ready"}, {type:"progress", id, message, fraction},
  * {type:"log", id, level, message}, {type:"done", id, result, files}, {type:"failed", id, error}.
  */
+import { installWheelChecked } from "./wheelInstall";
 
 interface StartMessage {
   type: "start";
   pyodideURL: string;
   pyodidePackagesURL: string;
   wheels: string[];
+  /** The hash a wheel is to have, by its address, for those an extension index describes. */
+  wheelHashes?: Record<string, string>;
   slicerVersion: string;
   pyodidePackages: string[];
 }
@@ -66,7 +69,7 @@ os.environ["LD_LIBRARY_PATH"] = ":".join(_dirs + [os.environ.get("LD_LIBRARY_PAT
   const micropip = pyodide.pyimport("micropip");
   for (const wheel of message.wheels) {
     post({ type: "progress", message: `Loading ${wheel.split("/").pop()}`, fraction: 0.5 });
-    await micropip.install(wheel, { keep_going: true });
+    await installWheelChecked(pyodide, micropip, wheel, message.wheelHashes?.[wheel], { keep_going: true });
   }
   // What a job reports while it runs: slicerweb job progress goes back to the page.
   pyodide.registerJsModule("slicerweb_job", {

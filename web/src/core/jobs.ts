@@ -6,6 +6,7 @@
  * scene and the views stay in the page and keep working while a job runs.
  */
 import { DEFAULT_STARTUP_PACKAGES, PYODIDE_VERSION } from "./runtime";
+import { storedWheelHashes } from "./wheelInstall";
 
 export interface JobSpec {
   /** Python run in the worker; what it leaves in "result" comes back. */
@@ -127,6 +128,8 @@ export class JobRunner {
           pyodideURL: new URL("pyodide/", document.baseURI).href,
           pyodidePackagesURL: `https://cdn.jsdelivr.net/pyodide/v${PYODIDE_VERSION}/full/`,
           wheels,
+          // The hashes of the extension wheels, which the worker checks as the page did
+          wheelHashes: storedWheelHashes(),
           slicerVersion,
           pyodidePackages: ["numpy", "micropip", "packaging"],
         });
